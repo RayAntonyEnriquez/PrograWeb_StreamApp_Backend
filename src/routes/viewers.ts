@@ -3,6 +3,47 @@ import { db } from "../db";
 
 const router = Router();
 
+// GET /api/viewers/by-usuario/:usuarioId
+// Permite mapear un usuario (login) a su perfil de viewer para consumir saldo/puntos.
+router.get(
+  "/viewers/by-usuario/:usuarioId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const usuarioId = Number(req.params.usuarioId);
+      if (Number.isNaN(usuarioId)) return res.status(400).json({ message: "usuarioId invalido" });
+
+      const { rows } = await db.query(
+        `SELECT pv.id AS viewer_id,
+                u.id AS usuario_id,
+                u.email,
+                u.nombre,
+                u.avatar_url,
+                pv.nivel_actual,
+                pv.puntos
+         FROM perfiles_viewer pv
+         JOIN usuarios u ON u.id = pv.usuario_id
+         WHERE u.id = $1`,
+        [usuarioId]
+      );
+
+      if (!rows.length) return res.status(404).json({ message: "viewer no encontrado para usuario" });
+      const row = rows[0];
+
+      return res.json({
+        viewerId: row.viewer_id,
+        usuarioId: row.usuario_id,
+        email: row.email,
+        nombre: row.nombre,
+        avatar_url: row.avatar_url,
+        nivel_actual: row.nivel_actual,
+        puntos: Number(row.puntos),
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
 // GET /api/viewers/:viewerId/saldo
 router.get("/viewers/:viewerId/saldo", async (req: Request, res: Response, next: NextFunction) => {
   try {

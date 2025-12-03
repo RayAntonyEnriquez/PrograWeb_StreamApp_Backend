@@ -293,4 +293,62 @@ router.get(
   }
 );
 
+// GET /api/streams/en-vivo
+// Lista streams en estado 'en_vivo' con datos bA!sicos para el feed.
+router.get("/streams/en-vivo", async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT s.id,
+              s.streamer_id,
+              s.titulo,
+              s.estado,
+              s.inicio_en,
+              s.vdo_view_url,
+              s.vdo_push_url,
+              u.nombre AS streamer_nombre,
+              u.avatar_url
+       FROM streams s
+       JOIN perfiles_streamer ps ON ps.id = s.streamer_id
+       JOIN usuarios u ON u.id = ps.usuario_id
+       WHERE s.estado = 'en_vivo'
+       ORDER BY s.inicio_en DESC NULLS LAST, s.id DESC
+       LIMIT 100`
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/streams/:streamId
+// Devuelve datos base del stream (urls VDO, estado, titulo).
+router.get("/streams/:streamId", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const streamId = Number(req.params.streamId);
+    if (Number.isNaN(streamId)) return res.status(400).json({ message: "streamId invalido" });
+
+    const { rows } = await db.query(
+      `SELECT s.id,
+              s.streamer_id,
+              s.titulo,
+              s.estado,
+              s.inicio_en,
+              s.fin_en,
+              s.vdo_view_url,
+              s.vdo_push_url,
+              u.nombre AS streamer_nombre,
+              u.avatar_url
+       FROM streams s
+       JOIN perfiles_streamer ps ON ps.id = s.streamer_id
+       JOIN usuarios u ON u.id = ps.usuario_id
+       WHERE s.id = $1`,
+      [streamId]
+    );
+    if (!rows.length) return res.status(404).json({ message: "stream no encontrado" });
+    return res.json(rows[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

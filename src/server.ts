@@ -1,4 +1,5 @@
 import express from "express";
+import cors from "cors";
 import mensajesRouter from "./routes/mensajes";
 import regalosRouter from "./routes/regalos";
 import viewersRouter from "./routes/viewers";
@@ -10,6 +11,15 @@ import streamerRoutes from "./routes/streamers";
 import monetizacionRoutes from "./routes/monetizacion";
 
 const app = express();
+
+// CORS para desarrollo local (Vite en 5173 / GitHub Pages usarA¡ fetch al dominio Render)
+app.use(
+  cors({
+    origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
+    credentials: false,
+  })
+);
+
 app.use(express.json());
 
 app.use("/api/auth", authRouter);
