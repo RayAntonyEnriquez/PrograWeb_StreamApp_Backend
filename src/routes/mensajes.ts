@@ -78,4 +78,37 @@ router.post("/streams/:streamId/mensajes", async (req: Request, res: Response, n
   }
 });
 
+// GET /api/streams/:streamId/mensajes
+// Devuelve mensajes del chat incluyendo nivel y nombre del usuario.
+router.get("/streams/:streamId/mensajes", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const streamId = Number(req.params.streamId);
+    if (Number.isNaN(streamId)) return res.status(400).json({ message: "streamId invalido" });
+
+    const { rows } = await db.query(
+      `SELECT mc.id,
+              mc.stream_id,
+              mc.usuario_id,
+              u.nombre AS usuario_nombre,
+              u.avatar_url,
+              mc.tipo,
+              mc.mensaje,
+              mc.badge,
+              mc.nivel_usuario,
+              mc.gift_id,
+              mc.envio_regalo_id,
+              mc.creado_en
+       FROM mensajes_chat mc
+       JOIN usuarios u ON u.id = mc.usuario_id
+       WHERE mc.stream_id = $1
+       ORDER BY mc.creado_en ASC, mc.id ASC`,
+      [streamId]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
