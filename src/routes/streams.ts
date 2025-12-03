@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from "express";
+import crypto from "crypto";
 import { db } from "../db";
 
 const router = Router();
@@ -23,6 +24,11 @@ const parseDateOrNow = (value?: unknown) => {
   }
   return new Date();
 };
+
+const buildVdoLinks = (key: string) => ({
+  pushUrl: `https://vdo.ninja/?push=${key}&webcam&quality=0&proaudio`,
+  viewUrl: `https://vdo.ninja/?view=${key}&cleanoutput`,
+});
 
 // POST /api/streams/:streamId/start
 // Marca inicio de una sesion RTMP; idempotente si ya existe una sesion abierta.
@@ -67,17 +73,37 @@ router.post(
       if (openSession.rowCount) {
         await client.query("COMMIT");
         const s = openSession.rows[0];
+        const vdoRes = await client.query(
+          `SELECT vdo_stream_key, vdo_push_url, vdo_view_url FROM streams WHERE id = $1`,
+          [streamId]
+        );
+        const vdo = vdoRes.rows[0];
         return res.json({
           sessionId: s.id,
           streamId,
           inicio: s.inicio,
           estado_stream: stream.estado,
           mensaje: "sesion ya abierta",
+          vdo_stream_key: vdo?.vdo_stream_key ?? null,
+          vdo_push_url: vdo?.vdo_push_url ?? null,
+          vdo_view_url: vdo?.vdo_view_url ?? null,
         });
       }
 
       await alignSequence(client, "sesiones_stream");
       const inicioDate = parseDateOrNow(startedAt);
+
+      const streamKey = stream.vdo_stream_key || crypto.randomBytes(6).toString("hex");
+      const { pushUrl, viewUrl } = buildVdoLinks(streamKey);
+
+      await client.query(
+        `UPDATE streams
+         SET vdo_stream_key = $1,
+             vdo_push_url = $2,
+             vdo_view_url = $3
+         WHERE id = $4`,
+        [streamKey, pushUrl, viewUrl, streamId]
+      );
 
       const sessionRes = await client.query(
         `INSERT INTO sesiones_stream (stream_id, inicio)
@@ -100,6 +126,9 @@ router.post(
         streamId,
         inicio: sessionRes.rows[0].inicio,
         estado_stream: "en_vivo",
+        vdo_stream_key: streamKey,
+        vdo_push_url: pushUrl,
+        vdo_view_url: viewUrl,
       });
     } catch (err) {
       await client.query("ROLLBACK");

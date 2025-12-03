@@ -1,7 +1,13 @@
 import { Router, Request, Response, NextFunction } from "express";
+import crypto from "crypto";
 import { db } from "../db";
 
 const router = Router();
+
+const buildVdoLinks = (key: string) => ({
+  pushUrl: `https://vdo.ninja/?push=${key}&webcam&quality=0&proaudio`,
+  viewUrl: `https://vdo.ninja/?view=${key}&cleanoutput`,
+});
 
 // --- Req 11: Datos para el Dashboard ---
 router.get("/streamers/:userId/dashboard", async (req: Request, res: Response, next: NextFunction) => {
@@ -22,7 +28,7 @@ router.get("/streamers/:userId/dashboard", async (req: Request, res: Response, n
   }
 });
 
-// --- Req 23: Iniciar Transmisión ---
+// --- Req 23: Iniciar Transmision ---
 router.post("/streams/start", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { streamerId, titulo } = req.body;
@@ -35,16 +41,35 @@ router.post("/streams/start", async (req: Request, res: Response, next: NextFunc
     );
     const streamId = streamRes.rows[0].id;
 
-    // 2. Iniciamos una sesión de tiempo (para contar exacto)
+    // 2. Iniciamos una sesion de tiempo (para contar exacto)
     await db.query(`INSERT INTO sesiones_stream (stream_id, inicio) VALUES ($1, NOW())`, [streamId]);
 
-    res.json({ success: true, streamId, message: "Stream iniciado" });
+    // 3. Generamos key y URLs de VDO.Ninja y las guardamos
+    const streamKey = crypto.randomBytes(6).toString("hex");
+    const { pushUrl, viewUrl } = buildVdoLinks(streamKey);
+    await db.query(
+      `UPDATE streams
+       SET vdo_stream_key = $1,
+           vdo_push_url = $2,
+           vdo_view_url = $3
+       WHERE id = $4`,
+      [streamKey, pushUrl, viewUrl, streamId]
+    );
+
+    res.json({
+      success: true,
+      streamId,
+      message: "Stream iniciado",
+      vdo_stream_key: streamKey,
+      vdo_push_url: pushUrl,
+      vdo_view_url: viewUrl,
+    });
   } catch (err) {
     next(err);
   }
 });
 
-// --- Req 23 y 21: Finalizar Transmisión y checkear nivel ---
+// --- Req 23 y 21: Finalizar Transmision y checkear nivel ---
 router.post("/streams/end", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { streamId, streamerId } = req.body;
@@ -52,7 +77,7 @@ router.post("/streams/end", async (req: Request, res: Response, next: NextFuncti
     // 1. Finalizar en tabla streams
     await db.query(`UPDATE streams SET estado = 'finalizado', fin_en = NOW() WHERE id = $1`, [streamId]);
 
-    // 2. Cerrar sesión y calcular duración
+    // 2. Cerrar sesion y calcular duracion
     const sessionRes = await db.query(
       `UPDATE sesiones_stream 
        SET fin = NOW(), duracion_horas = EXTRACT(EPOCH FROM (NOW() - inicio))/3600 
@@ -70,7 +95,7 @@ router.post("/streams/end", async (req: Request, res: Response, next: NextFuncti
     );
     const { horas_totales, nivel_actual } = perfilRes.rows[0];
 
-    // 4. Lógica de subida de nivel por horas
+    // 4. Logica de subida de nivel por horas
     const nivelRes = await db.query(
       `SELECT nivel FROM reglas_nivel_streamer 
        WHERE horas_requeridas <= $1 AND nivel > $2 
@@ -84,7 +109,7 @@ router.post("/streams/end", async (req: Request, res: Response, next: NextFuncti
     if (nivelRes.rows.length > 0) {
       nuevoNivel = nivelRes.rows[0].nivel;
       await db.query(`UPDATE perfiles_streamer SET nivel_actual = $1 WHERE id = $2`, [nuevoNivel, streamerId]);
-      mensajeNivel = `¡Felicidades! Has subido al nivel ${nuevoNivel}`;
+      mensajeNivel = `Felicidades! Has subido al nivel ${nuevoNivel}`;
     }
 
     res.json({
@@ -101,3 +126,4 @@ router.post("/streams/end", async (req: Request, res: Response, next: NextFuncti
 });
 
 export default router;
+
