@@ -129,3 +129,80 @@
   - Saldo: `viewerId, usuarioId, saldo_coins`.
   - Mensaje: `mensajeId, streamId, viewerId, puntos_totales, creado_en`.
   - Envio regalo: `envioId, streamId, streamerId, viewerId, coins_gastados, puntos_generados, puntos_totales, saldo_restante, creado_en`.
+  - Progreso nivel: `viewerId, nivel_actual, puntos_actuales, es_nivel_maximo, siguiente_nivel, puntos_requeridos, falta_puntos, recompensa_coins, progreso_porcentaje`.
+  - Chat (listado): `id, stream_id, usuario_id, usuario_nombre, avatar_url, tipo, mensaje, badge, nivel_usuario, gift_id, envio_regalo_id, creado_en`.
+
+### Nuevo requerimiento
+5) **Como espectador, puedo ver cuanto me falta para el siguiente nivel para mantenerme motivado.**
+
+### Nuevo endpoint
+#### 6) Progreso hacia siguiente nivel (viewer)
+- `GET /api/viewers/:viewerId/progreso-nivel`
+- Usa `perfiles_viewer` y `reglas_nivel_viewer` activas para calcular puntos actuales, el siguiente nivel, recompensa y porcentaje.
+- Respuestas:
+  - 200 OK (con siguiente nivel):
+    ```json
+    {
+      "viewerId": 1,
+      "nivel_actual": 4,
+      "puntos_actuales": 850,
+      "es_nivel_maximo": false,
+      "siguiente_nivel": 5,
+      "puntos_requeridos": 1000,
+      "falta_puntos": 150,
+      "recompensa_coins": 100,
+      "progreso_porcentaje": 85
+    }
+    ```
+  - 200 OK si ya está en el nivel máximo (sin siguiente nivel activo), con `es_nivel_maximo: true` y `falta_puntos: 0`.
+  - 400 si `viewerId` no es numérico.
+  - 404 si el viewer no existe.
+
+### Comando de prueba
+- Progreso hacia siguiente nivel:  
+  `curl http://localhost:3000/api/viewers/1/progreso-nivel`
+
+### Nuevo requerimiento streamer
+6) **Como streamer, puedo crear/editar/eliminar regalos con nombre, costo y puntos para personalizar mi canal.**
+
+### Nuevos endpoints (streamer)
+- `POST /api/streamers/:streamerId/regalos`  
+  Body: `nombre` (string), `costo_coins` (number>0), `puntos_otorgados` (number>=0), `costo_usd` (number|null, opcional), `activo` (bool, opcional). Devuelve regalo creado.  
+  Ejemplo:  
+  `curl -X POST http://localhost:3000/api/streamers/1/regalos -H "Content-Type: application/json" -d "{\"nombre\":\"Cafecito\",\"costo_usd\":1.99,\"costo_coins\":200,\"puntos_otorgados\":20}"`
+- `PUT /api/streamers/:streamerId/regalos/:regaloId`  
+  Actualiza los campos del regalo del streamer (mismas validaciones; `activo` opcional).  
+  Ejemplo:  
+  `curl -X PUT http://localhost:3000/api/streamers/1/regalos/1 -H "Content-Type: application/json" -d "{\"nombre\":\"Cafecito XL\",\"costo_usd\":2.49,\"costo_coins\":250,\"puntos_otorgados\":30,\"activo\":true}"`
+- `DELETE /api/streamers/:streamerId/regalos/:regaloId`  
+  Desactiva (soft delete) el regalo del streamer. Responde 204 sin body.  
+  Ejemplo:  
+  `curl -X DELETE http://localhost:3000/api/streamers/1/regalos/1`
+
+### Nuevo requerimiento streamer (niveles)
+7) **Como streamer, puedo configurar los puntos requeridos por nivel para mis espectadores para ajustar la progresión a mi comunidad.**
+
+### Nuevos endpoints (niveles viewer)
+- `GET /api/niveles-viewer` (lista todas las reglas activas/inactivas, ordenadas por nivel).
+- `POST /api/niveles-viewer` (crea regla; requiere `nivel`, `puntos_requeridos`, `recompensa_coins`, `activo` opcional).
+- `PUT /api/niveles-viewer/:id` (actualiza regla; valida duplicados de nivel).
+- `DELETE /api/niveles-viewer/:id` (soft delete, pone `activo=false`).
+
+### Comandos de prueba (niveles viewer)
+- Listar reglas nivel viewer:  
+  `curl http://localhost:3000/api/niveles-viewer`
+- Crear regla nivel viewer:  
+  `curl -X POST http://localhost:3000/api/niveles-viewer -H "Content-Type: application/json" -d "{\"nivel\":6,\"puntos_requeridos\":1500,\"recompensa_coins\":150,\"activo\":true}"`
+- Editar regla nivel viewer:  
+  `curl -X PUT http://localhost:3000/api/niveles-viewer/1 -H "Content-Type: application/json" -d "{\"puntos_requeridos\":1100,\"recompensa_coins\":120}"`
+- Desactivar regla nivel viewer:  
+  `curl -X DELETE http://localhost:3000/api/niveles-viewer/1`
+
+### Nuevo requerimiento chat
+8) **Como espectador, puedo ver el nivel de cada usuario junto a su nombre en el chat para comparar participación.**
+
+### Nuevo endpoint (chat con nivel)
+- `GET /api/streams/:streamId/mensajes`  
+  Devuelve los mensajes del stream con nombre, avatar y `nivel_usuario` guardado en `mensajes_chat`. Ordenado por fecha asc.
+  Ejemplo:  
+  `curl http://localhost:3000/api/streams/1/mensajes`

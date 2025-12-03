@@ -1,4 +1,4 @@
-﻿import { Router, Request, Response, NextFunction } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import { db } from "../db";
 
 const router = Router();
@@ -37,6 +37,149 @@ router.get("/regalos", async (_req, res, next) => {
     next(err);
   }
 });
+
+// POST /api/streamers/:streamerId/regalos
+// Crea un regalo nuevo para un streamer.
+router.post(
+  "/streamers/:streamerId/regalos",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const streamerId = Number(req.params.streamerId);
+      const { nombre, costo_usd, costo_coins, puntos_otorgados, activo = true } = req.body || {};
+
+      if (Number.isNaN(streamerId)) return res.status(400).json({ message: "streamerId invalido" });
+      if (!nombre || typeof nombre !== "string" || !nombre.trim())
+        return res.status(400).json({ message: "nombre requerido" });
+      if (Number.isNaN(Number(costo_coins)) || Number(costo_coins) <= 0)
+        return res.status(400).json({ message: "costo_coins debe ser numero > 0" });
+      if (Number.isNaN(Number(puntos_otorgados)) || Number(puntos_otorgados) < 0)
+        return res.status(400).json({ message: "puntos_otorgados debe ser numero >= 0" });
+
+      const streamerRes = await db.query(
+        `SELECT id FROM perfiles_streamer WHERE id = $1`,
+        [streamerId]
+      );
+      if (!streamerRes.rowCount) return res.status(404).json({ message: "streamer no encontrado" });
+
+      // Alinear secuencia para evitar PK duplicada si se precargaron IDs.
+      await db.query(
+        `SELECT setval(
+           pg_get_serial_sequence('regalos','id'),
+           GREATEST(
+             (SELECT COALESCE(MAX(id),0) FROM regalos),
+             (SELECT last_value FROM regalos_id_seq)
+           ),
+           true
+         )`
+      );
+
+      const { rows } = await db.query(
+        `INSERT INTO regalos (streamer_id, nombre, costo_usd, costo_coins, puntos_otorgados, activo)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, streamer_id, nombre, costo_usd, costo_coins, puntos_otorgados, activo`,
+        [
+          streamerId,
+          nombre.trim(),
+          costo_usd === undefined || costo_usd === null ? null : Number(costo_usd),
+          Number(costo_coins),
+          Number(puntos_otorgados),
+          Boolean(activo),
+        ]
+      );
+
+      return res.status(201).json(rows[0]);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// PUT /api/streamers/:streamerId/regalos/:regaloId
+// Edita un regalo existente del streamer.
+router.put(
+  "/streamers/:streamerId/regalos/:regaloId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const streamerId = Number(req.params.streamerId);
+      const regaloId = Number(req.params.regaloId);
+      const { nombre, costo_usd, costo_coins, puntos_otorgados, activo } = req.body || {};
+
+      if (Number.isNaN(streamerId)) return res.status(400).json({ message: "streamerId invalido" });
+      if (Number.isNaN(regaloId)) return res.status(400).json({ message: "regaloId invalido" });
+      if (!nombre || typeof nombre !== "string" || !nombre.trim())
+        return res.status(400).json({ message: "nombre requerido" });
+      if (Number.isNaN(Number(costo_coins)) || Number(costo_coins) <= 0)
+        return res.status(400).json({ message: "costo_coins debe ser numero > 0" });
+      if (Number.isNaN(Number(puntos_otorgados)) || Number(puntos_otorgados) < 0)
+        return res.status(400).json({ message: "puntos_otorgados debe ser numero >= 0" });
+      const activoFlag =
+        activo === undefined || activo === null ? undefined : Boolean(activo);
+
+      const regaloRes = await db.query(
+        `SELECT id, streamer_id FROM regalos WHERE id = $1`,
+        [regaloId]
+      );
+      if (!regaloRes.rowCount) return res.status(404).json({ message: "regalo no encontrado" });
+      if (regaloRes.rows[0].streamer_id !== streamerId)
+        return res.status(400).json({ message: "regalo no pertenece a este streamer" });
+
+      const { rows } = await db.query(
+        `UPDATE regalos
+         SET nombre = $1,
+             costo_usd = $2,
+             costo_coins = $3,
+             puntos_otorgados = $4,
+             activo = COALESCE($5, activo)
+         WHERE id = $6
+         RETURNING id, streamer_id, nombre, costo_usd, costo_coins, puntos_otorgados, activo`,
+        [
+          nombre.trim(),
+          costo_usd === undefined || costo_usd === null ? null : Number(costo_usd),
+          Number(costo_coins),
+          Number(puntos_otorgados),
+          activoFlag,
+          regaloId,
+        ]
+      );
+
+      return res.json(rows[0]);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// DELETE /api/streamers/:streamerId/regalos/:regaloId
+// Desactiva un regalo (soft delete).
+router.delete(
+  "/streamers/:streamerId/regalos/:regaloId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const streamerId = Number(req.params.streamerId);
+      const regaloId = Number(req.params.regaloId);
+
+      if (Number.isNaN(streamerId)) return res.status(400).json({ message: "streamerId invalido" });
+      if (Number.isNaN(regaloId)) return res.status(400).json({ message: "regaloId invalido" });
+
+      const regaloRes = await db.query(
+        `SELECT id, streamer_id FROM regalos WHERE id = $1`,
+        [regaloId]
+      );
+      if (!regaloRes.rowCount) return res.status(404).json({ message: "regalo no encontrado" });
+      if (regaloRes.rows[0].streamer_id !== streamerId)
+        return res.status(400).json({ message: "regalo no pertenece a este streamer" });
+
+      await db.query(
+        `UPDATE regalos SET activo = FALSE WHERE id = $1`,
+        [regaloId]
+      );
+
+      return res.status(204).send();
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 // POST /api/streams/:streamId/regalos/:regaloId/enviar
 // Compra/envia un regalo: descuenta coins, suma puntos y registra el envio.
