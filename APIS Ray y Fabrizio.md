@@ -206,3 +206,26 @@
   Devuelve los mensajes del stream con nombre, avatar y `nivel_usuario` guardado en `mensajes_chat`. Ordenado por fecha asc.
   Ejemplo:  
   `curl http://localhost:3000/api/streams/1/mensajes`
+
+
+Generar links VDO Ninja
+curl -X POST http://localhost:3000/api/streams/1/vdo-link \
+  -H "Content-Type: application/json" \
+  -d '{"streamerId":1}'
+
+Respuesta (ejemplo):
+{
+  "streamId": 1,
+  "streamerId": 1,
+  "token": "Ab12Cd34Ef56",
+  "links": {
+    "room": "stream1",
+    "streamer": {
+      "push": "https://vdo.ninja/?push=Ab12Cd34Ef56&room=stream1",
+      "room": "https://vdo.ninja/?room=stream1"
+    },
+    "viewer": {
+      "scene": "https://vdo.ninja/?scene&room=stream1"
+    }
+  }
+}

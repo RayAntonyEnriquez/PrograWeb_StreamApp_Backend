@@ -1,5 +1,6 @@
 ﻿import { Router, Request, Response, NextFunction } from "express";
 import { db } from "../db";
+import { broadcastStreamEvent } from "../sse";
 
 const router = Router();
 
@@ -38,17 +39,57 @@ router.post("/streams/:streamId/mensajes", async (req: Request, res: Response, n
       return { leveledUp: false, nuevoNivel: nivelActual };
     };
 
+    let viewerRow = null as any;
     const viewerRes = await client.query(
       `SELECT pv.id, pv.usuario_id, pv.nivel_actual, pv.puntos
        FROM perfiles_viewer pv
        WHERE pv.id = $1`,
       [Number(viewerId)]
     );
-    if (!viewerRes.rowCount) {
+    if (viewerRes.rowCount) {
+      viewerRow = viewerRes.rows[0];
+    } else {
+      // Si llega un perfil de streamer, intenta reutilizar/crear perfil viewer para ese usuario.
+      const fallbackStreamer = await client.query(
+        `SELECT usuario_id FROM perfiles_streamer WHERE id = $1`,
+        [Number(viewerId)]
+      );
+      if (fallbackStreamer.rowCount) {
+        const usuarioId = Number(fallbackStreamer.rows[0].usuario_id);
+        const existingViewer = await client.query(
+          `SELECT id, usuario_id, nivel_actual, puntos FROM perfiles_viewer WHERE usuario_id = $1`,
+          [usuarioId]
+        );
+        if (existingViewer.rowCount) {
+          viewerRow = existingViewer.rows[0];
+        } else {
+          // Alinear secuencia y crear perfil viewer nuevo
+          await client.query(
+            `SELECT setval(
+               pg_get_serial_sequence('perfiles_viewer','id'),
+               GREATEST(
+                 1,
+                 (SELECT COALESCE(MAX(id),1) FROM perfiles_viewer),
+                 (SELECT last_value FROM perfiles_viewer_id_seq)
+               ),
+               true
+             )`
+          );
+          const inserted = await client.query(
+            `INSERT INTO perfiles_viewer (usuario_id)
+             VALUES ($1)
+             RETURNING id, usuario_id, nivel_actual, puntos`,
+            [usuarioId]
+          );
+          viewerRow = inserted.rows[0];
+        }
+      }
+    }
+    if (!viewerRow) {
       await client.query("ROLLBACK");
       return res.status(404).json({ message: "viewer no encontrado" });
     }
-    const viewer = viewerRes.rows[0];
+    const viewer = viewerRow;
 
     const streamRes = await client.query(`SELECT id FROM streams WHERE id = $1`, [streamId]);
     if (!streamRes.rowCount) {
@@ -61,7 +102,8 @@ router.post("/streams/:streamId/mensajes", async (req: Request, res: Response, n
       `SELECT setval(
           pg_get_serial_sequence('mensajes_chat','id'),
           GREATEST(
-            (SELECT COALESCE(MAX(id),0) FROM mensajes_chat),
+            1,
+            (SELECT COALESCE(MAX(id),1) FROM mensajes_chat),
             (SELECT last_value FROM mensajes_chat_id_seq)
           ),
           true
@@ -76,25 +118,46 @@ router.post("/streams/:streamId/mensajes", async (req: Request, res: Response, n
       [viewer.id]
     );
 
+    const puntosTotales = Number(puntosRes.rows[0].puntos);
+    const levelResult = await checkLevelUp(viewer.id, puntosTotales, viewer.nivel_actual);
+
     const msgRes = await client.query(
       `INSERT INTO mensajes_chat (stream_id, usuario_id, tipo, mensaje, badge, nivel_usuario, creado_en)
        VALUES ($1, $2, 'texto', $3, 'none', $4, NOW())
        RETURNING id, creado_en`,
-      [streamId, viewer.usuario_id, mensaje.trim(), viewer.nivel_actual]
+      [streamId, viewer.usuario_id, mensaje.trim(), levelResult.nuevoNivel]
     );
 
-    const levelResult = await checkLevelUp(viewer.id, Number(puntosRes.rows[0].puntos), viewer.nivel_actual);
-
     await client.query("COMMIT");
-    return res.status(201).json({
+
+    const responseBody = {
       mensajeId: msgRes.rows[0].id,
       streamId,
       viewerId: viewer.id,
-      puntos_totales: Number(puntosRes.rows[0].puntos),
+      puntos_totales: puntosTotales,
       leveled_up: levelResult.leveledUp,
       nivel_actual: levelResult.nuevoNivel,
       creado_en: msgRes.rows[0].creado_en,
+    };
+
+    // Emitir en tiempo real al chat del stream
+    broadcastStreamEvent(streamId, "chat_message", {
+      ...responseBody,
+      usuario_id: viewer.usuario_id,
+      mensaje: mensaje.trim(),
     });
+
+    // Si subió de nivel, emitir evento dedicado (útil para toasts)
+    if (levelResult.leveledUp) {
+      broadcastStreamEvent(streamId, "viewer_level_up", {
+        viewerId: viewer.id,
+        usuario_id: viewer.usuario_id,
+        nivel_actual: levelResult.nuevoNivel,
+        puntos_totales: puntosTotales,
+      });
+    }
+
+    return res.status(201).json(responseBody);
   } catch (err) {
     await client.query("ROLLBACK");
     next(err);

@@ -199,18 +199,6 @@ CREATE INDEX idx_mensajes_chat_stream ON mensajes_chat (stream_id, creado_en);
 CREATE INDEX idx_mov_billetera_billetera ON movimientos_billetera (billetera_id, creado_en);
 
 
-se anadio a la tabla de stream 
-
-ALTER TABLE streams
-  ADD COLUMN vdo_stream_key TEXT,
-  ADD COLUMN vdo_push_url TEXT,
-  ADD COLUMN vdo_view_url TEXT,
-  ADD COLUMN vdo_room TEXT;
-
-
-
-
-
 
 
 

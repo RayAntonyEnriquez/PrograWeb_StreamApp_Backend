@@ -40,7 +40,8 @@ router.post("/niveles-viewer", async (req: Request, res: Response, next: NextFun
       `SELECT setval(
          pg_get_serial_sequence('reglas_nivel_viewer','id'),
          GREATEST(
-           (SELECT COALESCE(MAX(id),0) FROM reglas_nivel_viewer),
+           1,
+           (SELECT COALESCE(MAX(id),1) FROM reglas_nivel_viewer),
            (SELECT last_value FROM reglas_nivel_viewer_id_seq)
          ),
          true
