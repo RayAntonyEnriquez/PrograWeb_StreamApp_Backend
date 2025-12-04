@@ -61,3 +61,5 @@ curl http://localhost:3000/api/streams/1/eventos/regalos?limit=20
 
 Progreso de nivel del streamer (horas faltantes)
 curl http://localhost:3000/api/streamers/1/progreso-nivel
+
+

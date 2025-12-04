@@ -43,10 +43,13 @@ const alignSequence = async (
   table: string,
   column: string = "id"
 ) => {
+  // Si la tabla está vacía, setval a 1 para evitar out-of-bounds (valor mínimo de la secuencia)
   await client.query(
-    `SELECT setval(pg_get_serial_sequence($1, $2),
-                   (SELECT COALESCE(MAX(${column}),0) FROM ${table}),
-                   true)`,
+    `SELECT setval(
+        pg_get_serial_sequence($1, $2),
+        GREATEST((SELECT COALESCE(MAX(${column}),1) FROM ${table}), 1),
+        true
+      )`,
     [table, column]
   );
 };

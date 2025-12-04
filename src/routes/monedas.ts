@@ -9,9 +9,14 @@ const alignSequence = async (
   column: string = "id"
 ) => {
   await client.query(
-    `SELECT setval(pg_get_serial_sequence($1, $2),
-                   (SELECT COALESCE(MAX(${column}),0) FROM ${table}),
-                   true)`,
+    `SELECT setval(
+        pg_get_serial_sequence($1, $2),
+        GREATEST(
+          1,
+          (SELECT COALESCE(MAX(${column}),1) FROM ${table}),
+          (SELECT last_value FROM pg_get_serial_sequence($1, $2))
+        ),
+        true)`,
     [table, column]
   );
 };

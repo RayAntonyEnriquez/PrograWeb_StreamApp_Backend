@@ -22,6 +22,59 @@ router.get("/streamers/:userId/dashboard", async (req: Request, res: Response, n
   }
 });
 
+// Actividad reciente: seguidores y regalos
+router.get("/streamers/:streamerId/actividad", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const streamerId = Number(req.params.streamerId);
+    const limit = Math.min(Number(req.query.limit) || 10, 50);
+    if (Number.isNaN(streamerId)) return res.status(400).json({ message: "streamerId invalido" });
+
+    const { rows } = await db.query(
+      `
+      SELECT tipo, actor, gift, fecha
+      FROM (
+        SELECT 'follow' AS tipo,
+               u.nombre AS actor,
+               NULL::text AS gift,
+               seg.creado_en AS fecha
+        FROM seguimientos seg
+        JOIN perfiles_viewer pv ON pv.id = seg.viewer_id
+        JOIN usuarios u ON u.id = pv.usuario_id
+        WHERE seg.streamer_id = $1
+        UNION ALL
+        SELECT 'gift' AS tipo,
+               u.nombre AS actor,
+               g.nombre AS gift,
+               e.creado_en AS fecha
+        FROM envios_regalo e
+        JOIN perfiles_viewer pv2 ON pv2.id = e.remitente_id
+        JOIN usuarios u ON u.id = pv2.usuario_id
+        JOIN regalos g ON g.id = e.gift_id
+        WHERE e.streamer_id = $1
+      ) acts
+      ORDER BY fecha DESC
+      LIMIT $2
+      `,
+      [streamerId, limit]
+    );
+
+    const mapped = rows.map((r) => ({
+      tipo: r.tipo,
+      actor: r.actor,
+      gift: r.gift,
+      fecha: r.fecha,
+      descripcion:
+        r.tipo === "gift"
+          ? `${r.actor} envió un regalo${r.gift ? ` (${r.gift})` : ""}`
+          : `${r.actor} comenzó a seguirte`,
+    }));
+
+    res.json({ items: mapped });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // --- Req 23: Iniciar Transmisión ---
 router.post("/streams/start", async (req: Request, res: Response, next: NextFunction) => {
   try {

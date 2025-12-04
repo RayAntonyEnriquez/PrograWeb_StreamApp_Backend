@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { db } from "../db";
+import { broadcastStreamEvent } from "../sse";
 
 const router = Router();
 
@@ -66,7 +67,8 @@ router.post(
         `SELECT setval(
            pg_get_serial_sequence('regalos','id'),
            GREATEST(
-             (SELECT COALESCE(MAX(id),0) FROM regalos),
+             1,
+             (SELECT COALESCE(MAX(id),1) FROM regalos),
              (SELECT last_value FROM regalos_id_seq)
            ),
            true
@@ -224,21 +226,68 @@ router.post(
         return { leveledUp: false, nuevoNivel: nivelActual };
       };
 
-      const viewerRes = await client.query(
-        `SELECT pv.id, pv.usuario_id, pv.nivel_actual, pv.puntos,
-                b.id AS billetera_id, b.saldo_coins
-         FROM perfiles_viewer pv
-         JOIN usuarios u ON u.id = pv.usuario_id
-         JOIN billeteras b ON b.usuario_id = u.id
-         WHERE pv.id = $1
-         FOR UPDATE`,
-        [Number(viewerId)]
-      );
+      const findViewer = async (id: number) => {
+        return client.query(
+          `SELECT pv.id, pv.usuario_id, pv.nivel_actual, pv.puntos,
+                  b.id AS billetera_id, b.saldo_coins
+           FROM perfiles_viewer pv
+           JOIN usuarios u ON u.id = pv.usuario_id
+           JOIN billeteras b ON b.usuario_id = u.id
+           WHERE pv.id = $1
+           FOR UPDATE`,
+          [id]
+        );
+      };
+
+      let viewerRow: any = null;
+      let viewerRes = await findViewer(Number(viewerId));
+
       if (!viewerRes.rowCount) {
+        // Intentar con usuario asociado a un perfil de streamer (permite que streamers puedan regalar como viewers)
+        const fallbackStreamer = await client.query(
+          `SELECT usuario_id FROM perfiles_streamer WHERE id = $1`,
+          [Number(viewerId)]
+        );
+        if (fallbackStreamer.rowCount) {
+          const usuarioId = Number(fallbackStreamer.rows[0].usuario_id);
+          const existingViewer = await client.query(
+            `SELECT id FROM perfiles_viewer WHERE usuario_id = $1`,
+            [usuarioId]
+          );
+          if (existingViewer.rowCount) {
+            viewerRes = await findViewer(Number(existingViewer.rows[0].id));
+          } else {
+            await client.query(
+              `SELECT setval(
+                 pg_get_serial_sequence('perfiles_viewer','id'),
+                 GREATEST(
+                   1,
+                   (SELECT COALESCE(MAX(id),1) FROM perfiles_viewer),
+                   (SELECT last_value FROM perfiles_viewer_id_seq)
+                 ),
+                 true
+               )`
+            );
+            const created = await client.query(
+              `INSERT INTO perfiles_viewer (usuario_id)
+               VALUES ($1)
+               RETURNING id`,
+              [usuarioId]
+            );
+            viewerRes = await findViewer(Number(created.rows[0].id));
+          }
+        }
+      }
+
+      if (viewerRes.rowCount) {
+        viewerRow = viewerRes.rows[0];
+      }
+
+      if (!viewerRow) {
         await client.query("ROLLBACK");
         return res.status(404).json({ message: "viewer no encontrado" });
       }
-      const viewer = viewerRes.rows[0];
+      const viewer = viewerRow;
 
       const streamRes = await client.query(`SELECT id, streamer_id FROM streams WHERE id = $1`, [streamId]);
       if (!streamRes.rowCount) {
@@ -248,7 +297,7 @@ router.post(
       const stream = streamRes.rows[0];
 
       const regaloRes = await client.query(
-        `SELECT id, streamer_id, costo_coins, puntos_otorgados, activo
+        `SELECT id, streamer_id, nombre, costo_coins, puntos_otorgados, activo
          FROM regalos
          WHERE id = $1 AND activo = TRUE`,
         [regaloId]
@@ -275,18 +324,27 @@ router.post(
       // Alinear secuencias para evitar PK duplicadas
       await client.query(
         `SELECT setval(pg_get_serial_sequence('envios_regalo','id'),
-                       GREATEST((SELECT COALESCE(MAX(id),0) FROM envios_regalo),
-                                (SELECT last_value FROM envios_regalo_id_seq)), true)`
+                       GREATEST(
+                         1,
+                         (SELECT COALESCE(MAX(id),1) FROM envios_regalo),
+                         (SELECT last_value FROM envios_regalo_id_seq)
+                       ), true)`
       );
       await client.query(
         `SELECT setval(pg_get_serial_sequence('movimientos_billetera','id'),
-                       GREATEST((SELECT COALESCE(MAX(id),0) FROM movimientos_billetera),
-                                (SELECT last_value FROM movimientos_billetera_id_seq)), true)`
+                       GREATEST(
+                         1,
+                         (SELECT COALESCE(MAX(id),1) FROM movimientos_billetera),
+                         (SELECT last_value FROM movimientos_billetera_id_seq)
+                       ), true)`
       );
       await client.query(
         `SELECT setval(pg_get_serial_sequence('mensajes_chat','id'),
-                       GREATEST((SELECT COALESCE(MAX(id),0) FROM mensajes_chat),
-                                (SELECT last_value FROM mensajes_chat_id_seq)), true)`
+                       GREATEST(
+                         1,
+                         (SELECT COALESCE(MAX(id),1) FROM mensajes_chat),
+                         (SELECT last_value FROM mensajes_chat_id_seq)
+                       ), true)`
       );
 
       const billeteraRes = await client.query(
@@ -322,7 +380,8 @@ router.post(
         [totalPuntos, viewer.id]
       );
 
-      const levelResult = await checkLevelUp(viewer.id, Number(puntosRes.rows[0].puntos), viewer.nivel_actual);
+      const puntosTotales = Number(puntosRes.rows[0].puntos);
+      const levelResult = await checkLevelUp(viewer.id, puntosTotales, viewer.nivel_actual);
 
       await client.query(
         `INSERT INTO mensajes_chat (stream_id, usuario_id, tipo, mensaje, gift_id, envio_regalo_id, badge, nivel_usuario, creado_en)
@@ -331,19 +390,41 @@ router.post(
       );
 
       await client.query("COMMIT");
-      return res.status(201).json({
+
+      const responseBody = {
         envioId: envioRes.rows[0].id,
         streamId: stream.id,
         streamerId: stream.streamer_id,
         viewerId: viewer.id,
         coins_gastados: totalCoins,
         puntos_generados: totalPuntos,
-        puntos_totales: Number(puntosRes.rows[0].puntos),
+        puntos_totales: puntosTotales,
         leveled_up: levelResult.leveledUp,
         nivel_actual: levelResult.nuevoNivel,
         saldo_restante: Number(billeteraRes.rows[0].saldo_coins),
         creado_en: envioRes.rows[0].creado_en,
+      };
+
+      // Eventos en tiempo real para overlay/chat
+      broadcastStreamEvent(stream.id, "gift_sent", {
+        ...responseBody,
+        viewer_usuario_id: viewer.usuario_id,
+        gift_id: regalo.id,
+        gift_nombre: regalo.nombre,
+        cantidad: qty,
+        mensaje: msgText,
       });
+
+      if (levelResult.leveledUp) {
+        broadcastStreamEvent(stream.id, "viewer_level_up", {
+          viewerId: viewer.id,
+          usuario_id: viewer.usuario_id,
+          nivel_actual: levelResult.nuevoNivel,
+          puntos_totales: puntosTotales,
+        });
+      }
+
+      return res.status(201).json(responseBody);
     } catch (err) {
       await client.query("ROLLBACK");
       next(err);
