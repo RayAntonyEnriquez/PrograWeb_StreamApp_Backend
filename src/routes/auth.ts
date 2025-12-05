@@ -217,10 +217,76 @@ router.post("/login", async (req: Request, res: Response, next: NextFunction) =>
     const passwordOk = await bcrypt.compare(password, user.password_hash);
     if (!passwordOk) return res.status(401).json({ message: "credenciales invalidas" });
 
+    // Recuperar info de perfil para evitar que el frontend dependa de IDs por defecto
+    let perfilId: number | null = null;
+    let canalSlug: string | null = null;
+    if (user.rol === "espectador") {
+      const perfilViewer = await db.query(
+        `SELECT id FROM perfiles_viewer WHERE usuario_id = $1`,
+        [user.id]
+      );
+      perfilId = perfilViewer.rows[0]?.id ?? null;
+    } else if (user.rol === "streamer") {
+      const perfilStreamer = await db.query(
+        `SELECT id, canal_slug FROM perfiles_streamer WHERE usuario_id = $1`,
+        [user.id]
+      );
+      if (perfilStreamer.rowCount) {
+        perfilId = perfilStreamer.rows[0].id;
+        canalSlug = perfilStreamer.rows[0].canal_slug;
+      }
+    }
+
     const accessToken = signAccessToken(user.id, user.rol);
     const client = await db.getClient();
     try {
       await client.query("BEGIN");
+
+      // Asegurar que el usuario tenga un perfil asociado (viewer/streamer) para que el frontend
+      // no dependa de IDs por defecto al iniciar sesión.
+      if (user.rol === "espectador") {
+        const perfilViewer = await client.query(
+          `SELECT id FROM perfiles_viewer WHERE usuario_id = $1 FOR UPDATE`,
+          [user.id]
+        );
+        if (perfilViewer.rowCount) {
+          perfilId = perfilViewer.rows[0].id;
+        } else {
+          await alignSequence(client, "perfiles_viewer");
+          const created = await client.query(
+            `INSERT INTO perfiles_viewer (usuario_id) VALUES ($1) RETURNING id`,
+            [user.id]
+          );
+          perfilId = created.rows[0].id;
+        }
+      } else if (user.rol === "streamer") {
+        const perfilStreamer = await client.query(
+          `SELECT id, canal_slug FROM perfiles_streamer WHERE usuario_id = $1 FOR UPDATE`,
+          [user.id]
+        );
+        if (perfilStreamer.rowCount) {
+          perfilId = perfilStreamer.rows[0].id;
+          canalSlug = perfilStreamer.rows[0].canal_slug;
+        } else {
+          await alignSequence(client, "perfiles_streamer");
+          let slug = slugify(user.nombre || user.email || `canal-${user.id}`);
+          if (!slug) slug = `canal-${user.id}`;
+          const exists = await client.query(
+            `SELECT 1 FROM perfiles_streamer WHERE canal_slug = $1`,
+            [slug]
+          );
+          if (exists.rowCount) slug = `${slug}-${user.id}`;
+          const created = await client.query(
+            `INSERT INTO perfiles_streamer (usuario_id, canal_slug, titulo_canal)
+             VALUES ($1, $2, NULL)
+             RETURNING id, canal_slug`,
+            [user.id, slug]
+          );
+          perfilId = created.rows[0].id;
+          canalSlug = created.rows[0].canal_slug;
+        }
+      }
+
       const { refreshToken, expiresAt } = await createRefreshToken(client, user.id);
       await client.query("COMMIT");
       return res.json({
@@ -228,6 +294,8 @@ router.post("/login", async (req: Request, res: Response, next: NextFunction) =>
         refreshToken,
         refresh_expires_at: expiresAt.toISOString(),
         usuario: buildUsuarioPayload(user),
+        perfilId,
+        canal_slug: canalSlug,
       });
     } catch (err) {
       await client.query("ROLLBACK");
